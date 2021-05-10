@@ -17,7 +17,10 @@ from collections import deque, namedtuple
 
 import numpy as np
 import torch
-from examples.speech_recognition.data.replabels import unpack_replabels
+try:
+    from data.replabels import unpack_replabels
+except:
+    from examples.speech_recognition.data.replabels import unpack_replabels
 from fairseq import tasks
 from fairseq.utils import apply_to_sample
 from omegaconf import open_dict
@@ -43,6 +46,8 @@ except:
     )
     LM = object
     LMState = object
+
+from fairseq.tasks.audio_pretraining import HF2FairSeqDictWrapper
 
 
 class W2lDecoder(object):
@@ -157,7 +162,11 @@ class W2lKenLMDecoder(W2lDecoder):
                 word_idx = self.word_dict.get_index(word)
                 _, score = self.lm.score(start_state, word_idx)
                 for spelling in spellings:
-                    spelling_idxs = [tgt_dict.index(token) for token in spelling]
+                    if isinstance(tgt_dict, HF2FairSeqDictWrapper) and hasattr(tgt_dict, "hf_tokenizer"):
+                        xx = [tgt_dict.hf_tokenizer.encode(x, add_special_tokens=False) for x in spelling]
+                        spelling_idxs = [y for x in xx for y in x]
+                    else:
+                        spelling_idxs = [tgt_dict.index(token) for token in spelling]
                     assert (
                         tgt_dict.unk() not in spelling_idxs
                     ), f"{spelling} {spelling_idxs}"
@@ -405,7 +414,11 @@ class W2lFairseqLMDecoder(W2lDecoder):
                     _, score = self.lm.score(start_state, word_idx, no_cache=True)
 
                 for spelling in spellings:
-                    spelling_idxs = [tgt_dict.index(token) for token in spelling]
+                    if isinstance(tgt_dict, HF2FairSeqDictWrapper) and hasattr(tgt_dict, "hf_tokenizer"):
+                        xx = [tgt_dict.hf_tokenizer.encode(x, add_special_tokens=False) for x in spelling]
+                        spelling_idxs = [y for x in xx for y in x]
+                    else:
+                        spelling_idxs = [tgt_dict.index(token) for token in spelling]
                     assert (
                         tgt_dict.unk() not in spelling_idxs
                     ), f"{spelling} {spelling_idxs}"

@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 def add_asr_eval_argument(parser):
     parser.add_argument("--kspmodel", default=None, help="sentence piece model")
+    parser.add_argument("--hf_tokenizer", default=None, help="override for HF tokenizers")
     parser.add_argument(
         "--wfstlm", default=None, help="wfstlm on dictonary output units"
     )
@@ -129,7 +130,7 @@ def process_predictions(
                 file=res_files["hypo.units"],
             )
             print(
-                "{} ({}-{})".format(hyp_words, speaker, id),
+                "{} ({}-{})".format(hyp_words.upper(), speaker, id),
                 file=res_files["hypo.words"],
             )
 
@@ -142,16 +143,16 @@ def process_predictions(
                 file=res_files["ref.units"],
             )
             print(
-                "{} ({}-{})".format(tgt_words, speaker, id), file=res_files["ref.words"]
+                "{} ({}-{})".format(tgt_words.upper(), speaker, id), file=res_files["ref.words"]
             )
+            # only score top hypothesis
+            if not args.quiet:
+                logger.info("HYPO:" + hyp_words)
+                logger.info("TARGET:" + tgt_words)
+                logger.info("___________________")
 
-        if not args.quiet:
-            logger.info("HYPO:" + hyp_words)
-            logger.info("TARGET:" + tgt_words)
-            logger.info("___________________")
-
-        hyp_words = hyp_words.split()
-        tgt_words = tgt_words.split()
+        hyp_words = hyp_words.upper().split()
+        tgt_words = tgt_words.upper().split()
         return editdistance.eval(hyp_words, tgt_words), len(tgt_words)
 
 
@@ -217,6 +218,11 @@ def main(args, task=None, model_state=None):
     use_cuda = torch.cuda.is_available() and not args.cpu
 
     logger.info("| decoding with criterion {}".format(args.criterion))
+    
+    #import cloudpickle as pickle
+    #pickle.dump(args, open('ARGS.bin', 'wb'))
+    #args = pickle.load(open('ARGS.bin', 'rb'))
+    #model_state = None
 
     task = tasks.setup_task(args)
 
@@ -226,7 +232,8 @@ def main(args, task=None, model_state=None):
         task.load_dataset(args.gen_subset)
     else:
         logger.info("| loading model(s) from {}".format(args.path))
-        models, saved_cfg, task = checkpoint_utils.load_model_ensemble_and_task(
+        #models, saved_cfg, task = checkpoint_utils.load_model_ensemble_and_task(
+        models, saved_cfg = checkpoint_utils.load_model_ensemble(
             utils.split_paths(args.path),
             arg_overrides=ast.literal_eval(args.model_overrides),
             task=task,
@@ -263,15 +270,15 @@ def main(args, task=None, model_state=None):
     def build_generator(args):
         w2l_decoder = getattr(args, "w2l_decoder", None)
         if w2l_decoder == "viterbi":
-            from examples.speech_recognition.w2l_decoder import W2lViterbiDecoder
+            from w2l_decoder import W2lViterbiDecoder
 
             return W2lViterbiDecoder(args, task.target_dictionary)
         elif w2l_decoder == "kenlm":
-            from examples.speech_recognition.w2l_decoder import W2lKenLMDecoder
+            from w2l_decoder import W2lKenLMDecoder
 
             return W2lKenLMDecoder(args, task.target_dictionary)
         elif w2l_decoder == "fairseqlm":
-            from examples.speech_recognition.w2l_decoder import W2lFairseqLMDecoder
+            from w2l_decoder import W2lFairseqLMDecoder
 
             return W2lFairseqLMDecoder(args, task.target_dictionary)
         else:
