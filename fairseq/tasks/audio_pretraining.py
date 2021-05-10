@@ -19,6 +19,7 @@ from omegaconf import MISSING, II
 from fairseq.data import (
     AddTargetDataset,
     BinarizedAudioDataset,
+    FileAudioDatasetShelve,
     Dictionary,
     FileAudioDataset,
     encoders,
@@ -30,8 +31,108 @@ from . import FairseqTask, register_task
 from .. import utils
 from ..logging import metrics
 
+from transformers import AutoTokenizer
+from transformers.tokenization_utils import PreTrainedTokenizer
+
 
 logger = logging.getLogger(__name__)
+
+
+class HF2FairSeqDictWrapper(Dictionary):
+    def __init__(self, tokenizer_string: str, hf_tokenizer: PreTrainedTokenizer = None):
+        if hf_tokenizer is None:
+            self.hf_tokenizer = AutoTokenizer.from_pretrained(tokenizer_string)
+        else:
+            self.hf_tokenizer = hf_tokenizer
+        
+        self.indices = self.hf_tokenizer.get_vocab()
+        self.symbols = list(self.hf_tokenizer.get_vocab().keys())
+        self.count = []
+        self.nspecial = 4
+        
+        self.bos_index = self.hf_tokenizer.bos_token_id
+        self.pad_index = self.hf_tokenizer.pad_token_id
+        self.eos_index = self.hf_tokenizer.eos_token_id
+        self.unk_index = self.hf_tokenizer.unk_token_id
+        
+        self.bos_word = self.hf_tokenizer.bos_token
+        self.pad_word = self.hf_tokenizer.pad_token
+        self.eos_word = self.hf_tokenizer.eos_token
+        self.unk_word = self.hf_tokenizer.unk_token
+    
+    '''
+    def bos(self):
+        """Helper to get index of beginning-of-sentence symbol"""
+        return self.hf_tokenizer.bos_token_id
+
+    def pad(self):
+        """Helper to get index of pad symbol"""
+        return self.hf_tokenizer.pad_token_id
+
+    def eos(self):
+        """Helper to get index of end-of-sentence symbol"""
+        return self.hf_tokenizer.eos_token_id
+
+    def unk(self):
+        """Helper to get index of unk symbol"""
+        return self.hf_tokenizer.unk_token_id
+    
+    def __len__(self):
+        """Returns the number of symbols in the dictionary"""
+        return len(self.hf_tokenizer)
+    
+    def __contains__(self, sym):
+        return sym in self.hf_tokenizer.get_vocab()
+    
+    def __getitem__(self, idx):
+        if idx < len(self.hf_tokenizer):
+            return self.hf_tokenizer.convert_ids_to_tokens(idx)
+        return self.hf_tokenizer.unk_token
+    
+    def index(self, sym):
+        """Returns the index of the specified symbol"""
+        assert isinstance(sym, str)
+        if sym in self.hf_tokenizer.get_vocab():
+            return self.hf_tokenizer.convert_tokens_to_ids(sym)
+        return self.hf_tokenizer.unk_token_id
+    '''
+    
+    def string(
+        self,
+        tensor,
+        bpe_symbol=None,
+        escape_unk=False,
+        extra_symbols_to_ignore=None,
+        unk_string=None,
+        include_eos=False,
+    ):
+        if torch.is_tensor(tensor) and tensor.dim() == 2:
+            return "\n".join(
+                self.string(t, bpe_symbol, escape_unk, extra_symbols_to_ignore, include_eos=include_eos)
+                for t in tensor
+            )
+        
+        return self.hf_tokenizer.decode(tensor, skip_special_tokens=not include_eos)
+    
+    def encode_line(
+        self,
+        line,
+        #line_tokenizer=tokenize_line,
+        add_if_not_exist=True,
+        consumer=None,
+        append_eos=True,
+        reverse_order=False,
+    ):
+        tokens = self.hf_tokenizer.encode(line, add_special_tokens=False)
+        
+        if reverse_order:
+            tokens = list(reversed(tokens))
+        #nwords = len(tokens)
+        
+        if append_eos:
+            tokens.append(self.hf_tokenizer.eos_token_id)
+        
+        return torch.IntTensor(tokens)
 
 
 class LabelEncoder(object):
@@ -77,6 +178,9 @@ class AudioPretrainingConfig(FairseqDataclass):
     min_sample_size: Optional[int] = field(
         default=None, metadata={"help": "min sample size to skip small examples"}
     )
+    max_sample_length: Optional[int] = field(
+        default=None, metadata={"help": "max sample size to skip large examples"}
+    )
 
     # Options for reporting WER metrics during validation. Only applicable to
     # Seq2Seq models during fine-tuning
@@ -113,6 +217,9 @@ class AudioPretrainingConfig(FairseqDataclass):
         metadata={
             "help": "flag to compute mask indices in data preparation.",
         },
+    )
+    hf_tokenizer: Optional[str] = field(
+        default=None, metadata={"help": "optional HuggingFace tokenizer to use"}
     )
     # The following are needed to precompute mask and mask channel indices
     #   before model's forward.
@@ -164,9 +271,15 @@ class AudioPretrainingTask(FairseqTask):
 
     def load_target_dictionary(self):
         if self.cfg.labels:
-            dict_path = os.path.join(self.cfg.data, f"dict.{self.cfg.labels}.txt")
-            return Dictionary.load(dict_path)
-        return None
+            if self.cfg.hf_tokenizer is None:
+                dict_path = os.path.join(self.cfg.data, f"dict.{self.cfg.labels}.txt")
+                target_dictionary = Dictionary.load(dict_path)
+            else:
+                target_dictionary = HF2FairSeqDictWrapper(self.cfg.hf_tokenizer)
+        else:
+            target_dictionary = None
+        
+        return target_dictionary
 
     def _get_mask_precompute_kwargs(self, cfg):
         if self.cfg.precompute_mask_indices or self.cfg.tpu:
@@ -213,19 +326,35 @@ class AudioPretrainingTask(FairseqTask):
                 **self._get_mask_precompute_kwargs(task_cfg),
             )
         else:
-            manifest_path = os.path.join(data_path, "{}.tsv".format(split))
-
-            self.datasets[split] = FileAudioDataset(
-                manifest_path=manifest_path,
-                sample_rate=task_cfg.get("sample_rate", self.cfg.sample_rate),
-                max_sample_size=self.cfg.max_sample_size,
-                min_sample_size=self.cfg.min_sample_size,
-                pad=task_cfg.labels is not None or task_cfg.enable_padding,
-                normalize=task_cfg.normalize,
-                num_buckets=self.cfg.num_batch_buckets or int(self.cfg.tpu),
-                compute_mask_indices=(self.cfg.precompute_mask_indices or self.cfg.tpu),
-                **self._get_mask_precompute_kwargs(task_cfg),
-            )
+            old_fmt = '.tsv' in [os.path.splitext(os.path.basename(x))[-1] for x in os.listdir(data_path)]
+            
+            if old_fmt:
+                manifest_path = os.path.join(data_path, "{}.tsv".format(split))
+                self.datasets[split] = FileAudioDataset(
+                    manifest_path=manifest_path,
+                    sample_rate=task_cfg.get("sample_rate", self.cfg.sample_rate),
+                    max_sample_size=self.cfg.max_sample_size,
+                    min_sample_size=self.cfg.min_sample_size,
+                    pad=task_cfg.labels is not None or task_cfg.enable_padding,
+                    normalize=task_cfg.normalize,
+                    num_buckets=self.cfg.num_batch_buckets or int(self.cfg.tpu),
+                    compute_mask_indices=(self.cfg.precompute_mask_indices or self.cfg.tpu),
+                    **self._get_mask_precompute_kwargs(task_cfg),
+                )
+            else:
+                manifest_db = os.path.join(data_path, f"db_shelve_{split}")
+                self.datasets[split] = FileAudioDatasetShelve(
+                    db_name=manifest_db,
+                    sample_rate=task_cfg.get('sample_rate', self.cfg.sample_rate),
+                    max_sample_size=self.cfg.max_sample_size,
+                    min_sample_size=self.cfg.min_sample_size,
+                    max_sample_length=self.cfg.max_sample_length,
+                    pad=task_cfg.labels is not None or task_cfg.enable_padding,
+                    normalize=task_cfg.normalize,
+                    num_buckets=self.cfg.num_batch_buckets or int(self.cfg.tpu),
+                    compute_mask_indices=(self.cfg.precompute_mask_indices or self.cfg.tpu),
+                    **self._get_mask_precompute_kwargs(task_cfg),
+                )
 
         if self.cfg.tpu and task_cfg["mask_channel_prob"] == 0.0:
             logger.info(
@@ -235,14 +364,18 @@ class AudioPretrainingTask(FairseqTask):
             )
 
         if task_cfg.labels:
-            label_path = os.path.join(data_path, f"{split}.{task_cfg.labels}")
-            skipped_indices = getattr(self.datasets[split], 'skipped_indices', set())
-            with open(label_path, "r") as f:
-                labels = [
-                    line
-                    for i, line in enumerate(f)
-                    if i not in skipped_indices
-                ]
+            if old_fmt:
+                label_path = os.path.join(data_path, f"{split}.{task_cfg.labels}")
+                skipped_indices = getattr(self.datasets[split], 'skipped_indices', set())
+                with open(label_path, "r") as f:
+                    labels = [
+                        line
+                        for i, line in enumerate(f)
+                        if i not in skipped_indices
+                    ]
+            else:
+                label_path = f"labels_{task_cfg.labels}"
+                labels = getattr(self.datasets[split], label_path)
 
             assert len(labels) == len(self.datasets[split]), (
                 f"labels length ({len(labels)}) and dataset length "

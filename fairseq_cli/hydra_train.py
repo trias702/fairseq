@@ -10,7 +10,7 @@ import sys
 
 from fairseq.dataclass.initialize import add_defaults, hydra_init
 from fairseq_cli.train import main as pre_main
-from fairseq import distributed_utils, metrics
+from fairseq import distributed_utils
 from fairseq.dataclass.configs import FairseqConfig
 
 import hydra
@@ -23,7 +23,7 @@ logger = logging.getLogger("fairseq_cli.hydra_train")
 
 
 @hydra.main(config_path=os.path.join("..", "fairseq", "config"), config_name="config")
-def hydra_main(cfg: FairseqConfig) -> float:
+def hydra_main(cfg: FairseqConfig) -> None:
     add_defaults(cfg)
 
     if cfg.common.reset_logging:
@@ -32,35 +32,20 @@ def hydra_main(cfg: FairseqConfig) -> float:
         with open_dict(cfg):
             # make hydra logging work with ddp (see # see https://github.com/facebookresearch/hydra/issues/1126)
             cfg.job_logging_cfg = OmegaConf.to_container(HydraConfig.get().job_logging, resolve=True)
-
+    
     cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True, enum_to_str=True))
     OmegaConf.set_struct(cfg, True)
 
-    try:
-        if cfg.common.profile:
-            with torch.cuda.profiler.profile():
-                with torch.autograd.profiler.emit_nvtx():
-                    distributed_utils.call_main(cfg, pre_main)
-        else:
-            distributed_utils.call_main(cfg, pre_main)
-    except BaseException as e:
-        if not cfg.common.suppress_crashes:
-            raise
-        else:
-            logger.error("Crashed! " + str(e))
-
-    # get best val and return - useful for sweepers
-    try:
-        best_val = metrics.get_smoothed_value(
-            "valid", cfg.checkpoint.best_checkpoint_metric
-        )
-    except:
-        best_val = None
-
-    if best_val is None:
-        best_val = float("inf")
-
-    return best_val
+    if cfg.common.profile:
+        with torch.cuda.profiler.profile():
+            with torch.autograd.profiler.emit_nvtx():
+                distributed_utils.call_main(cfg, pre_main)
+    else:
+        distributed_utils.call_main(cfg, pre_main)
+    
+    if cfg.common.shutdown:
+        print('SHUTTING DOWN BOX', flush=True)
+        os.system('sudo shutdown +5')
 
 
 def reset_logging():

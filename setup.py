@@ -46,6 +46,8 @@ with open("README.md") as f:
 
 if sys.platform == "darwin":
     extra_compile_args = ["-stdlib=libc++", "-O3"]
+elif sys.platform == 'win32':
+    extra_compile_args = ["-std=c++11", "-O3", "-D_hypot=hypot"]
 else:
     extra_compile_args = ["-std=c++11", "-O3"]
 

@@ -286,7 +286,7 @@ def train(
         if log_output is not None:  # not OOM, overflow, ...
             # log mid-epoch stats
             num_updates = trainer.get_num_updates()
-            if num_updates % cfg.common.log_interval == 0:
+            if cfg.common.log_interval > 0 and num_updates % cfg.common.log_interval == 0:
                 stats = get_training_stats(metrics.get_smoothed_values("train_inner"))
                 progress.log(stats, tag="train_inner", step=num_updates)
 

@@ -834,7 +834,7 @@ class Trainer(object):
                 # only log stats every log_interval steps
                 # this causes wps to be misreported when log_interval > 1
                 logging_output = {}
-                if self.get_num_updates() % self.cfg.common.log_interval == 0:
+                if self.cfg.common.log_interval > 0 and self.get_num_updates() % self.cfg.common.log_interval == 0:
                     # log memory usage
                     mem_info = xm.get_memory_info(self.device)
                     gb_free = mem_info["kb_free"] / 1024 / 1024

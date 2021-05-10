@@ -200,6 +200,9 @@ class CommonConfig(FairseqDataclass):
             "help": "path to run plasma_store, defaults to /tmp/plasma. Paths outside /tmp tend to fail."
         },
     )
+    shutdown: bool = field(
+        default=False, metadata={"help": "shuts down local box once training is complete"}
+    )
 
 
 @dataclass

@@ -367,3 +367,76 @@ class BinarizedAudioDataset(RawAudioDataset):
         feats = torch.from_numpy(wav).float()
         feats = self.postprocess(feats, curr_sample_rate)
         return {"id": index, "source": feats}
+
+
+class FileAudioDatasetShelve(RawAudioDataset):
+    def __init__(
+        self,
+        db_name,
+        sample_rate,
+        max_sample_size=None,
+        min_sample_size=0,
+        max_sample_length=None,
+        shuffle=True,
+        pad=False,
+        normalize=False,
+        num_buckets=0,
+        compute_mask_indices=False,
+        **mask_compute_kwargs,
+    ):
+        super().__init__(
+            sample_rate=sample_rate,
+            max_sample_size=max_sample_size,
+            min_sample_size=min_sample_size,
+            shuffle=shuffle,
+            pad=pad,
+            normalize=normalize,
+            compute_mask_indices=compute_mask_indices,
+            **mask_compute_kwargs,
+        )
+        
+        import shelve
+        
+        self.db = shelve.open(f'{db_name}/db', 'r')
+        self.keys = list(self.db.keys())
+        
+        self.kept_keys = []
+        self.labels_wrd = []
+        self.labels_ltr = []
+        self.line_inds = set()
+
+        skipped = 0
+        for i, kk in enumerate(self.keys):
+            meta = self.db[kk][-1]
+            sz = int(meta['frames'])
+            if min_sample_size is not None and sz < min_sample_size:
+                skipped += 1
+                continue
+            if max_sample_length is not None and sz > max_sample_length:
+                skipped += 1
+                continue
+            self.kept_keys.append( kk )
+            self.line_inds.add(i)
+            self.sizes.append(sz)
+            self.labels_wrd.append(meta['label_wrd'])
+            self.labels_ltr.append(meta['label_ltr'])
+        
+        logger.info(f"loaded {len(self.kept_keys)}, skipped {skipped} samples")
+        
+        self.sizes = np.array(self.sizes, dtype=np.int64)
+        
+        self.set_bucket_info(num_buckets)
+    
+    def __del__(self):
+        self.db.close()
+
+    def __getitem__(self, index):
+        import pickle, gzip
+        
+        payload = self.db[self.kept_keys[index]]
+        wav = pickle.loads(gzip.decompress(payload[0]))
+        curr_sample_rate = payload[-1]['sample_rate']
+        
+        feats = torch.from_numpy(wav).float()
+        feats = self.postprocess(feats, curr_sample_rate)
+        return {"id": index, "source": feats}
