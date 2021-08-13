@@ -25,6 +25,7 @@ from fairseq import tasks
 from fairseq.utils import apply_to_sample
 from omegaconf import open_dict
 from fairseq.dataclass.utils import convert_namespace_to_omegaconf
+from fairseq.data.data_utils import post_process
 
 
 try:
@@ -64,10 +65,10 @@ class W2lDecoder(object):
                 if "<ctc_blank>" in tgt_dict.indices
                 else tgt_dict.bos()
             )
-            if "<sep>" in tgt_dict.indices:
-                self.silence = tgt_dict.index("<sep>")
-            elif "|" in tgt_dict.indices:
+            if "|" in tgt_dict.indices:
                 self.silence = tgt_dict.index("|")
+            elif "<sep>" in tgt_dict.indices:
+                self.silence = tgt_dict.index("<sep>")
             else:
                 self.silence = tgt_dict.eos()
             self.asg_transitions = None
@@ -148,6 +149,7 @@ class W2lKenLMDecoder(W2lDecoder):
         super().__init__(args, tgt_dict)
 
         self.unit_lm = getattr(args, "unit_lm", False)
+        self.tgt_dict = tgt_dict
 
         if args.lexicon:
             self.lexicon = load_words(args.lexicon)
@@ -221,7 +223,7 @@ class W2lKenLMDecoder(W2lDecoder):
             )
 
 
-    def decode(self, emissions):
+    def decode_old(self, emissions):
         B, T, N = emissions.size()
         hypos = []
         for b in range(B):
@@ -241,6 +243,79 @@ class W2lKenLMDecoder(W2lDecoder):
                     for result in nbest_results
                 ]
             )
+        return hypos
+    
+    
+    def decode(self, emissions):
+        B, T, N = emissions.size()
+        hypos = []
+        for b in range(B):
+            emissions_ptr = emissions.data_ptr() + 4 * b * emissions.stride(0)
+            results = self.decoder.decode(emissions_ptr, T, N)
+
+            nbest_results = results[: self.nbest]
+            
+            for result in nbest_results:
+                lp_softmax = emissions[b].softmax(dim=-1)
+                xx = it.groupby(result.tokens[1:][:-1])
+                res = []
+                idx = 0
+                for x in xx:
+                    len_ = len(list(x[-1]))
+                    if x[0] != self.blank:
+                        score = lp_softmax[idx:idx+len_][:, x[0]].prod().item()
+                    else:
+                        score = 0
+                    res.append( (idx, x[0], len_, score) )
+                    idx += len_
+                
+                word_groups = []
+                idx = 0
+                while idx < len(res) - 1:    
+                    x = res[idx]
+                    if x[1] == self.blank:
+                        idx += 1
+                        continue
+                    len_word = 1
+                    while idx+len_word < len(res):
+                        y = res[idx+len_word]
+                        if ((y[1] == self.silence) and (idx+len_word+1 >= len(res))) or ((y[1] == self.silence) and (res[idx+len_word+1][1] != self.silence)):
+                            len_word += 1
+                            break
+                        len_word += 1
+                    pp = res[idx:idx+len_word]
+                    letters = self.tgt_dict.string([w[1] for w in pp if w[1] != self.blank])
+                    word = post_process(letters, 'letter')
+                    if (len(word) > 0) and ([w[1] for w in pp if w[1] != self.blank][-1] == self.silence):
+                        word_groups.append( ((pp[0][0] * 20) / 1000, (sum([w[2] for w in pp]) * 20) / 1000, letters, word, np.mean([w[-1] for w in pp if w[1] != self.blank])) )
+                    idx = idx+len_word
+                
+                assert [x[3] for x in word_groups] == [self.word_dict.get_entry(x) for x in result.words if x >= 0], "mismatch between KenLM words and manual decode words"
+                
+                hypos.append(
+                    {
+                        "tokens": self.get_tokens(result.tokens),
+                        "score": result.score,
+                        "words": [self.word_dict.get_entry(x) for x in result.words if x >= 0],
+                        "word_groups": word_groups,
+                    }
+                )
+            
+            
+            '''
+            hypos.append(
+                [
+                    {
+                        "tokens": self.get_tokens(result.tokens),
+                        "score": result.score,
+                        "words": [
+                            self.word_dict.get_entry(x) for x in result.words if x >= 0
+                        ],
+                    }
+                    for result in nbest_results
+                ]
+            )
+            '''
         return hypos
 
 

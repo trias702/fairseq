@@ -7,6 +7,7 @@
 import logging
 import os
 import sys
+import subprocess
 
 from fairseq.dataclass.initialize import add_defaults, hydra_init
 from fairseq_cli.train import main as pre_main
@@ -45,7 +46,11 @@ def hydra_main(cfg: FairseqConfig) -> None:
     
     if cfg.common.shutdown:
         print('SHUTTING DOWN BOX', flush=True)
-        os.system('sudo shutdown +5')
+        if (os.getenv('AZ_VM_NAME') is not None) and (os.getenv('AZ_RES_GROUP') is not None):
+            #os.system("az vm deallocate -n " + os.getenv('AZ_VM_NAME') + " -g " + os.getenv('AZ_RES_GROUP'))
+            subprocess.Popen(['az', 'vm', 'deallocate', '-n', os.getenv('AZ_VM_NAME'), '-g', os.getenv('AZ_RES_GROUP')])
+        else:
+            os.system('sudo shutdown +5')
 
 
 def reset_logging():

@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 def add_asr_eval_argument(parser):
     parser.add_argument("--kspmodel", default=None, help="sentence piece model")
     parser.add_argument("--hf_tokenizer", default=None, help="override for HF tokenizers")
+    parser.add_argument("--use_jiwer", action='store_true', help="use jiwer instead of editdistance")
     parser.add_argument(
         "--wfstlm", default=None, help="wfstlm on dictonary output units"
     )
@@ -126,11 +127,11 @@ def process_predictions(
 
         if res_files is not None:
             print(
-                "{} ({}-{})".format(hyp_pieces, speaker, id),
+                "{}|{}".format(id, hyp_pieces),
                 file=res_files["hypo.units"],
             )
             print(
-                "{} ({}-{})".format(hyp_words.upper(), speaker, id),
+                "{}|{}".format(id, hyp_words.upper()),
                 file=res_files["hypo.words"],
             )
 
@@ -139,11 +140,11 @@ def process_predictions(
 
         if res_files is not None:
             print(
-                "{} ({}-{})".format(tgt_pieces, speaker, id),
+                "{}|{}".format(id, tgt_pieces),
                 file=res_files["ref.units"],
             )
             print(
-                "{} ({}-{})".format(tgt_words.upper(), speaker, id), file=res_files["ref.words"]
+                "{}|{}".format(id, tgt_words.upper()), file=res_files["ref.words"]
             )
             # only score top hypothesis
             if not args.quiet:
@@ -153,7 +154,24 @@ def process_predictions(
 
         hyp_words = hyp_words.upper().split()
         tgt_words = tgt_words.upper().split()
-        return editdistance.eval(hyp_words, tgt_words), len(tgt_words)
+        
+        if args.use_jiwer:
+            import jiwer.measures as jiwer
+            
+            jiwer_map = jiwer.compute_measures(tgt_words, hyp_words, standardize=True)
+            numer = sum(map(jiwer_map.get, ['substitutions','deletions','insertions']))
+            denom = sum(map(jiwer_map.get, ['hits','substitutions','deletions']))
+            
+            #chk1, chk2 = editdistance.eval(hyp_words, tgt_words), len(tgt_words)
+            
+            #if (numer > chk1) or (denom < chk2):
+            #    print("HYPO:", hyp_words, flush=True)
+            #    print("TARGET:", tgt_words, flush=True)
+            #    print("___________________", flush=True)
+            
+            return numer, denom
+        else:
+            return editdistance.eval(hyp_words, tgt_words), len(tgt_words)
 
 
 def prepare_result_files(args):
@@ -330,7 +348,7 @@ def main(args, task=None, model_state=None):
             prefix_tokens = None
             if args.prefix_size > 0:
                 prefix_tokens = sample["target"][:, : args.prefix_size]
-
+            
             gen_timer.start()
             if args.dump_emissions:
                 with torch.no_grad():
@@ -383,7 +401,7 @@ def main(args, task=None, model_state=None):
             wps_meter.update(num_generated_tokens)
             t.log({"wps": round(wps_meter.avg)})
             num_sentences += (
-                sample["nsentences"] if "nsentences" in sample else sample["id"].numel()
+                sample["nsentences"] if "nsentences" in sample else (sample["id"].numel() if type(sample["id"]) is torch.Tensor else sample["id"].size)
             )
 
     wer = None

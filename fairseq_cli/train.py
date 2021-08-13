@@ -378,6 +378,9 @@ def validate_and_save(
             and num_updates % cfg.dataset.validate_interval_updates == 0
         )
     ) and not cfg.dataset.disable_validation
+    
+    if (should_stop == False) and (cfg.dataset.validate_after_updates > 0) and (num_updates < cfg.dataset.validate_after_updates):
+        do_validate = do_save = False
 
     # Validate
     valid_losses = [None]
