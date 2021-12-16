@@ -255,6 +255,7 @@ class W2lKenLMDecoder(W2lDecoder):
 
             nbest_results = results[: self.nbest]
             
+            nbest_list = []
             for result in nbest_results:
                 lp_softmax = emissions[b].softmax(dim=-1)
                 xx = it.groupby(result.tokens[1:][:-1])
@@ -292,7 +293,7 @@ class W2lKenLMDecoder(W2lDecoder):
                 
                 assert [x[3] for x in word_groups] == [self.word_dict.get_entry(x) for x in result.words if x >= 0], "mismatch between KenLM words and manual decode words"
                 
-                hypos.append(
+                nbest_list.append(
                     {
                         "tokens": self.get_tokens(result.tokens),
                         "score": result.score,
@@ -300,6 +301,8 @@ class W2lKenLMDecoder(W2lDecoder):
                         "word_groups": word_groups,
                     }
                 )
+            
+            hypos.append( nbest_list )
             
             
             '''
