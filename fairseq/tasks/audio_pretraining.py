@@ -342,7 +342,7 @@ class AudioPretrainingTask(FairseqTask):
                     **self._get_mask_precompute_kwargs(task_cfg),
                 )
             else:
-                manifest_db = os.path.join(data_path, f"db_shelve_{split}")
+                manifest_db = os.path.join(data_path, split)
                 self.datasets[split] = FileAudioDatasetShelve(
                     db_name=manifest_db,
                     sample_rate=task_cfg.get('sample_rate', self.cfg.sample_rate),
